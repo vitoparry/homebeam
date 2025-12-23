@@ -1,0 +1,583 @@
+import React, { useState, useEffect, useRef } from 'react';
+import io from 'socket.io-client';
+import {
+  Monitor,
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  Cast,
+  Layout,
+  Wifi,
+  WifiOff,
+  X,
+  Camera,
+  Terminal
+} from 'lucide-react';
+
+// --- Configuration ---
+const rtcConfig = {
+  iceServers: []
+};
+
+export default function App() {
+  const [mode, setMode] = useState('home');
+  const [roomId, setRoomId] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [error, setError] = useState('');
+  const [showMediaTest, setShowMediaTest] = useState(false);
+  
+  // LOGGING STATE
+  const [logs, setLogs] = useState([]);
+  const [showDebug, setShowDebug] = useState(false);
+
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const testVideoRef = useRef(null);
+  const peerConnection = useRef(null);
+  const localStream = useRef(null);
+  const socketRef = useRef(null);
+
+  const candidateQueue = useRef([]);
+  const activeRoomIdRef = useRef('');
+
+  // --- Custom Logger Function ---
+  const log = (msg, type = 'info') => {
+    const timestamp = new Date().toLocaleTimeString();
+    const logMsg = `[${timestamp}] ${msg}`;
+    console.log(logMsg); 
+    setLogs(prev => [logMsg, ...prev].slice(0, 50)); 
+  };
+
+  useEffect(() => {
+    if (mode === 'room' && localVideoRef.current && localStream.current) {
+      log("Re-attaching local stream to video element");
+      localVideoRef.current.srcObject = localStream.current;
+    }
+  }, [mode]);
+
+  useEffect(() => {
+    if (showMediaTest && testVideoRef.current && localStream.current) {
+      testVideoRef.current.srcObject = localStream.current;
+    }
+  }, [showMediaTest]);
+
+  // --- Init Socket ---
+  useEffect(() => {
+    const hostname = window.location.hostname;
+    const socketUrl = `https://${hostname}:3001`; 
+    
+    log(`Connecting to socket: ${socketUrl}`);
+    
+    socketRef.current = io(socketUrl, {
+      secure: true, 
+      rejectUnauthorized: false,
+      transports: ['websocket', 'polling']
+    });
+
+    socketRef.current.on('connect', () => {
+        log("Socket Connected!", 'success');
+        setError('');
+    });
+    
+    socketRef.current.on('connect_error', (err) => {
+      log(`Socket Error: ${err.message}`, 'error');
+      setError(`Connection Failed. Trust the cert at https://${hostname}:3001`);
+    });
+
+    socketRef.current.on('user-joined', async () => {
+      log("Peer joined. Creating offer...");
+      try {
+        const offer = await peerConnection.current.createOffer();
+        await peerConnection.current.setLocalDescription(offer);
+        socketRef.current.emit('signal', {
+          roomId: activeRoomIdRef.current, 
+          // Explicitly structure the SDP object
+          signalData: { type: offer.type, sdp: offer.sdp }
+        });
+        log(`Offer sent to room: ${activeRoomIdRef.current}`);
+      } catch (err) {
+        log(`Offer Error: ${err.message}`, 'error');
+      }
+    });
+
+    socketRef.current.on('signal', async (data) => {
+      if (!peerConnection.current) return;
+      
+      const signalType = data.type || (data.candidate ? 'candidate' : 'unknown');
+      log(`Received Signal: ${signalType}`);
+
+      try {
+        if (data.type === 'offer') {
+          // Construct the session description carefully
+          const sessionDesc = new RTCSessionDescription({ type: data.type, sdp: data.sdp });
+          await peerConnection.current.setRemoteDescription(sessionDesc);
+          
+          log("Remote Desc Set (Offer). Creating Answer...");
+          
+          // Process queued candidates
+          while (candidateQueue.current.length > 0) {
+            const candidate = candidateQueue.current.shift();
+            log("Processing queued candidate...");
+            await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+          }
+
+          const answer = await peerConnection.current.createAnswer();
+          await peerConnection.current.setLocalDescription(answer);
+          
+          socketRef.current.emit('signal', {
+            roomId: activeRoomIdRef.current, 
+            // Explicitly structure the SDP object
+            signalData: { type: answer.type, sdp: answer.sdp }
+          });
+          log("Answer sent.");
+
+        } else if (data.type === 'answer') {
+          const sessionDesc = new RTCSessionDescription({ type: data.type, sdp: data.sdp });
+          await peerConnection.current.setRemoteDescription(sessionDesc);
+          log("Remote Desc Set (Answer).");
+          
+          // Process queued candidates
+          while (candidateQueue.current.length > 0) {
+            const candidate = candidateQueue.current.shift();
+            log("Processing queued candidate...");
+            await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+          }
+
+        } else if (data.candidate) {
+          if (peerConnection.current.remoteDescription) {
+             await peerConnection.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+             log("Added ICE Candidate directly.");
+          } else {
+             candidateQueue.current.push(data.candidate);
+             log("Queued ICE Candidate (waiting for remote desc).");
+          }
+        }
+      } catch (err) {
+        log(`Signal Error: ${err.message}`, 'error');
+        console.error(err);
+      }
+    });
+
+    return () => {
+        if(socketRef.current) socketRef.current.disconnect();
+    };
+  }, []);
+
+  // --- WebRTC Setup ---
+  const setupPeerConnection = async (currentRoomId) => {
+    log(`Initializing WebRTC for Room: ${currentRoomId}`);
+    peerConnection.current = new RTCPeerConnection(rtcConfig);
+
+    if (localStream.current) {
+      localStream.current.getTracks().forEach(track => {
+        peerConnection.current.addTrack(track, localStream.current);
+      });
+      log(`Added ${localStream.current.getTracks().length} local tracks.`);
+    }
+
+    peerConnection.current.ontrack = (event) => {
+      log("Received Remote Stream Track!");
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+      }
+    };
+
+    peerConnection.current.onconnectionstatechange = () => {
+        const state = peerConnection.current.connectionState;
+        log(`WebRTC State: ${state}`);
+        if (state === 'connected') setConnectionStatus('connected');
+        if (state === 'disconnected') setConnectionStatus('disconnected');
+    };
+
+    peerConnection.current.onicecandidate = (event) => {
+      if (event.candidate) {
+        socketRef.current.emit('signal', {
+          roomId: activeRoomIdRef.current, 
+          signalData: { candidate: event.candidate.toJSON() } // Serialize candidate
+        });
+      }
+    };
+  };
+
+  const openUserMedia = async () => {
+    try {
+      log("Requesting Camera/Mic permissions...");
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStream.current = stream;
+      
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.muted = true;
+      }
+      if (testVideoRef.current) {
+        testVideoRef.current.srcObject = stream;
+        testVideoRef.current.muted = true;
+      }
+      log("Camera access granted.");
+      return true;
+    } catch (err) {
+      log(`Camera Fail: ${err.message}`, 'error');
+      setError(`Camera Error: ${err.message}. HTTPS required.`);
+      return false;
+    }
+  };
+
+  const stopUserMedia = () => {
+    if (localStream.current) {
+      localStream.current.getTracks().forEach(track => track.stop());
+      localStream.current = null;
+    }
+  };
+
+  // --- Actions ---
+  const startSession = async () => {
+    log("Starting Session (Host)...");
+    const success = await openUserMedia();
+    if (!success) return;
+
+    const newRoomId = Math.floor(1000 + Math.random() * 9000).toString();
+    setRoomId(newRoomId);
+    activeRoomIdRef.current = newRoomId; 
+
+    await setupPeerConnection(newRoomId);
+
+    socketRef.current.emit('create-room', newRoomId);
+    socketRef.current.once('room-created', () => {
+      log(`Room ${newRoomId} Created!`);
+      setMode('room');
+      setConnectionStatus('waiting');
+    });
+    socketRef.current.once('error', (msg) => {
+        log(`Create Error: ${msg}`, 'error');
+        setError(msg);
+    });
+  };
+
+  const joinSession = async () => {
+    log(`Joining Session ${joinCode}...`);
+    if (!joinCode) return;
+    
+    setRoomId(joinCode);
+    activeRoomIdRef.current = joinCode; 
+
+    const success = await openUserMedia();
+    if (!success) return;
+    await setupPeerConnection(joinCode);
+
+    socketRef.current.emit('join-room', joinCode);
+    socketRef.current.once('room-joined', () => {
+      log("Joined Room Successfully!");
+      setMode('room');
+      setConnectionStatus('connecting');
+    });
+    socketRef.current.once('error', (msg) => {
+        log(`Join Error: ${msg}`, 'error');
+        setError(msg);
+        setMode('home');
+    });
+  };
+
+  const handleTestMedia = async () => {
+    const success = await openUserMedia();
+    if (success) {
+      setShowMediaTest(true);
+    }
+  };
+
+  const closeTestMedia = () => {
+    stopUserMedia();
+    setShowMediaTest(false);
+  };
+
+    // --- Media Toggles ---
+    const toggleMic = () => {
+        if (localStream.current) {
+          const track = localStream.current.getAudioTracks()[0];
+          track.enabled = !track.enabled;
+          setIsMuted(!track.enabled);
+        }
+      };
+    
+      const toggleCamera = () => {
+        if (localStream.current) {
+          const track = localStream.current.getVideoTracks()[0];
+          track.enabled = !track.enabled;
+          setIsVideoOff(!track.enabled);
+        }
+      };
+    
+      const toggleScreenShare = async () => {
+        if (isScreenSharing) {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          const track = stream.getVideoTracks()[0];
+          const sender = peerConnection.current.getSenders().find(s => s.track.kind === 'video');
+          sender.replaceTrack(track);
+          localVideoRef.current.srcObject = stream;
+          localStream.current = stream;
+          setIsScreenSharing(false);
+        } else {
+          try {
+            const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            const track = stream.getVideoTracks()[0];
+            const sender = peerConnection.current.getSenders().find(s => s.track.kind === 'video');
+            sender.replaceTrack(track);
+            localVideoRef.current.srcObject = stream;
+            track.onended = () => { if (isScreenSharing) toggleScreenShare(); };
+            setIsScreenSharing(true);
+          } catch (err) { console.error(err); }
+        }
+      };
+  
+  const leaveRoom = () => window.location.reload();
+
+  // --- Render ---
+  return (
+    <div className="w-full min-h-screen bg-slate-950 text-white font-sans relative overflow-hidden flex flex-col">
+
+      {/* Background */}
+      <div className="fixed inset-0 w-full h-full pointer-events-none z-0">
+        <img
+          src="/background.jpg"
+          alt="Ironman Background"
+          className="w-full h-full object-cover"
+          style={{ animation: 'breathing 10s ease-in-out infinite' }}
+        />
+      </div>
+
+      <style>{`
+        @keyframes breathing {
+          0% { opacity: 0.35; transform: scale(1); }
+          50% { opacity: 0.55; transform: scale(1.03); }
+          100% { opacity: 0.35; transform: scale(1); }
+        }
+        @keyframes glow {
+          0% { text-shadow: 0 0 10px #4f46e5, 0 0 20px #4f46e5, 0 0 30px #e0e7ff; }
+          50% { text-shadow: 0 0 20px #818cf8, 0 0 30px #818cf8, 0 0 40px #e0e7ff; }
+          100% { text-shadow: 0 0 10px #4f46e5, 0 0 20px #4f46e5, 0 0 30px #e0e7ff; }
+        }
+      `}</style>
+
+      {/* Navbar */}
+      <nav className="w-full p-4 border-b border-slate-800/50 bg-slate-900/50 flex justify-between items-center sticky top-0 z-50 backdrop-blur-md">
+        <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+          LAN Only
+        </span>
+        <div className="flex gap-4">
+            <button 
+                onClick={() => setShowDebug(!showDebug)}
+                className={`p-1.5 rounded-full transition-colors ${showDebug ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:text-white'}`}
+                title="Toggle Debug Logs"
+            >
+                <Terminal className="w-4 h-4" />
+            </button>
+            <div className={`text-xs font-mono px-3 py-1 rounded-full border flex items-center gap-2 ${
+            connectionStatus === 'connected' ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400' : 
+            error ? 'bg-red-500/10 border-red-500/50 text-red-400' : 
+            'bg-slate-800 border-slate-700 text-slate-400'
+            }`}>
+            <div className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+            {error ? 'Error' : connectionStatus === 'connected' ? 'Connected' : 'Ready'}
+            </div>
+        </div>
+      </nav>
+
+      {/* ON-SCREEN DEBUGGER */}
+      {showDebug && (
+        <div className="fixed bottom-0 left-0 w-full h-48 bg-black/90 text-green-400 font-mono text-xs p-4 overflow-y-auto z-[100] border-t border-slate-700">
+            <div className="flex justify-between items-center mb-2 border-b border-slate-800 pb-1">
+                <span className="font-bold text-white">SYSTEM LOGS</span>
+                <button onClick={() => setShowDebug(false)} className="text-slate-500 hover:text-white">Close</button>
+            </div>
+            {logs.length === 0 && <div className="text-slate-600 italic">No logs yet...</div>}
+            {logs.map((msg, i) => (
+                <div key={i} className="mb-1 border-b border-slate-800/30 pb-0.5">{msg}</div>
+            ))}
+        </div>
+      )}
+
+      <main className="relative z-10 flex-1 flex items-center justify-center p-6 w-full">
+        
+        {error && (
+            <div className="absolute top-4 mb-6 p-4 bg-red-900/20 border border-red-500/50 rounded-lg text-red-200 flex items-center gap-3 max-w-md w-full animate-in slide-in-from-top-4 z-50">
+                <WifiOff className="w-5 h-5 flex-shrink-0" />
+                <p className="text-sm">{error}</p>
+            </div>
+        )}
+
+        {/* Media Test Modal */}
+        {showMediaTest && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in zoom-in-95">
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-2xl relative shadow-2xl">
+              <button 
+                onClick={closeTestMedia} 
+                className="absolute top-4 right-4 text-slate-400 hover:text-white bg-slate-800 p-2 rounded-full hover:bg-slate-700 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <h3 className="text-2xl font-bold mb-4 flex items-center gap-2 text-white">
+                <Camera className="w-6 h-6 text-indigo-400" /> Test Mic & Camera
+              </h3>
+              <div className="aspect-video bg-black rounded-xl overflow-hidden border border-slate-800 relative mb-4">
+                <video 
+                  ref={testVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className="w-full h-full object-cover -scale-x-100" 
+                />
+                <div className="absolute bottom-4 left-4 bg-black/60 px-3 py-1 rounded text-xs text-white">
+                  Local Preview
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <button 
+                  onClick={closeTestMedia}
+                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors"
+                >
+                  Looks Good
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {mode === 'home' && (
+          <div className="w-full max-w-6xl flex flex-col md:flex-row gap-16 md:gap-20 items-center justify-center">
+
+            {/* Hero Text */}
+            <div className="flex flex-col space-y-8 text-center md:text-left pt-8 md:pt-0">
+              <h1 className="text-6xl md:text-8xl lg:text-9xl font-black tracking-tighter leading-tight text-white py-2 mb-6" style={{ animation: 'glow 3s infinite alternate' }}>
+                HomeBeam
+              </h1>
+
+              <div className="space-y-4">
+                <h2 className="text-3xl md:text-4xl font-bold text-slate-300">
+                  Offline. Secure. Local.
+                </h2>
+
+                <p className="text-slate-400 text-lg max-w-md mx-auto md:mx-0">
+                  Screen sharing that stays within your four walls.
+                  No Internet required. Data never leaves your router.
+                </p>
+                
+                <button 
+                  onClick={handleTestMedia}
+                  className="inline-flex items-center gap-2 text-indigo-400 hover:text-indigo-300 font-medium transition-colors border border-indigo-500/30 hover:border-indigo-500/60 px-4 py-2 rounded-lg bg-indigo-500/10"
+                >
+                  <Camera className="w-4 h-4" />
+                  Test Mic & Camera
+                </button>
+              </div>
+            </div>
+
+            {/* Card */}
+            <div className="w-full md:w-[420px] bg-slate-900/70 backdrop-blur-md p-8 rounded-3xl border border-slate-700/50 space-y-8 shadow-2xl">
+              <button
+                onClick={startSession}
+                className="w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl font-bold flex items-center justify-center gap-3 text-white hover:scale-105 transition-transform shadow-lg shadow-indigo-500/20"
+              >
+                <Cast className="w-5 h-5" />
+                Start Local Session
+              </button>
+
+              <div className="text-center text-sm text-slate-400 font-bold relative">
+                 <span className="bg-transparent relative z-10 px-2 bg-slate-900/50 rounded">OR JOIN EXISTING</span>
+                 <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-700/50"></div></div>
+              </div>
+
+              <div className="flex gap-3">
+                <input
+                  value={joinCode}
+                  onChange={e => setJoinCode(e.target.value.replace(/\D/g, ''))}
+                  placeholder="0000"
+                  maxLength={4}
+                  className="flex-1 bg-slate-950/80 border border-slate-700 rounded-xl px-4 py-3 text-center text-xl font-mono focus:border-indigo-500 outline-none transition-all text-white placeholder-slate-600"
+                />
+                <button
+                  onClick={joinSession}
+                  disabled={joinCode.length < 4}
+                  className="px-8 bg-slate-800 rounded-xl font-bold disabled:opacity-50 hover:bg-slate-700 transition-colors border border-slate-700 text-white"
+                >
+                  Join
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {mode === 'room' && (
+          <div className="w-full max-w-[1400px] h-[calc(100vh-120px)] flex flex-col gap-6 animate-in zoom-in-95">
+            <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-800">
+              <div className="flex items-center gap-4">
+                <span className="text-slate-400 text-sm uppercase tracking-wider font-semibold">Room Code</span>
+                <span className="text-3xl font-mono font-bold text-indigo-400 tracking-widest bg-slate-950 px-3 py-1 rounded-lg border border-slate-800">{roomId}</span>
+              </div>
+              <button onClick={leaveRoom} className="px-4 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors font-medium border border-red-500/10">
+                Disconnect
+              </button>
+            </div>
+
+            <div className="flex-1 grid md:grid-cols-2 gap-6 min-h-0">
+              {/* Local Video */}
+              <div className="relative bg-slate-900/90 rounded-2xl overflow-hidden border border-slate-800 group shadow-2xl backdrop-blur-sm">
+                <video 
+                  ref={localVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className={`w-full h-full object-cover transition-transform duration-300 ${isScreenSharing ? '' : '-scale-x-100'}`} 
+                />
+                <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+                  You {isScreenSharing ? '(Screen)' : '(Camera)'}
+                </div>
+                
+                {/* Controls */}
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center gap-6 opacity-0 group-hover:opacity-100 transition-all duration-300 backdrop-blur-[2px]">
+                  <button onClick={toggleMic} className={`p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isMuted ? 'bg-red-500 text-white' : 'bg-white text-slate-900'}`}>
+                    {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+                  </button>
+                  <button onClick={toggleCamera} className={`p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isVideoOff ? 'bg-red-500 text-white' : 'bg-white text-slate-900'}`}>
+                    {isVideoOff ? <VideoOff className="w-6 h-6" /> : <Video className="w-6 h-6" />}
+                  </button>
+                  <button onClick={toggleScreenShare} className={`p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isScreenSharing ? 'bg-indigo-500 text-white' : 'bg-white text-slate-900'}`}>
+                    {isScreenSharing ? <Layout className="w-6 h-6" /> : <Monitor className="w-6 h-6" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Remote Video */}
+              <div className="relative bg-slate-900/90 rounded-2xl overflow-hidden border border-slate-800 flex items-center justify-center shadow-2xl backdrop-blur-sm">
+                <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                {connectionStatus !== 'connected' && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-6 bg-slate-900/95 z-10 backdrop-blur-sm">
+                    <div className="relative">
+                      <div className="w-20 h-20 rounded-full border-4 border-slate-800 border-t-indigo-500 animate-spin" />
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Wifi className="w-8 h-8 text-indigo-500/50" />
+                      </div>
+                    </div>
+                    <div className="text-center space-y-2">
+                      <p className="text-lg font-medium text-white">Waiting for connection...</p>
+                      <p className="text-sm text-slate-500">Share code <span className="font-mono text-indigo-400 font-bold">{roomId}</span> to connect</p>
+                    </div>
+                  </div>
+                )}
+                <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2">
+                   <div className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-emerald-500' : 'bg-amber-500'}`}></div>
+                   Remote
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </main>
+    </div>
+  );
+}
