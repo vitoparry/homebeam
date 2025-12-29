@@ -30,3 +30,15 @@ certs/
 *.key
 .env
 .env.*
+
+
+# Local env
+.env
+.env.*
+
+# Local runtime folders
+.logs/
+.pids/
+
+# Scratch
+wip
