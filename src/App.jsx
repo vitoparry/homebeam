@@ -35,19 +35,19 @@ export default function App() {
   const [error, setError] = useState("");
   const [showMediaTest, setShowMediaTest] = useState(false);
 
-  // Toasts + notices
+  // Toasts
   const [toast, setToast] = useState("");
 
   // Debug logs
   const [logs, setLogs] = useState([]);
   const [showDebug, setShowDebug] = useState(false);
 
-  // Kid theme (Nebula / SuperNova)
-  const [kidTheme, setKidTheme] = useState(() => {
+  // Theme toggle (generic names)
+  const [themeMode, setThemeMode] = useState(() => {
     try {
-      return localStorage.getItem("homebeamTheme") || "nebula";
+      return localStorage.getItem("homebeamTheme") || "blue";
     } catch {
-      return "nebula";
+      return "blue";
     }
   });
 
@@ -63,45 +63,42 @@ export default function App() {
 
   const joinInputRef = useRef(null);
 
-  // --- Theme palette ---
   const theme = useMemo(() => {
     const THEMES = {
-      nebula: {
-        name: "Nebula",
+      blue: {
+        name: "Blue",
         gradient: "from-indigo-600 to-purple-600",
         accentText: "text-indigo-300",
         accentBorder: "border-indigo-500/30",
         accentBg: "bg-indigo-500/10"
       },
-      supernova: {
-        name: "SuperNova",
+      sunset: {
+        name: "Sunset",
         gradient: "from-amber-500 to-rose-500",
         accentText: "text-amber-200",
         accentBorder: "border-amber-400/30",
         accentBg: "bg-amber-400/10"
       }
     };
-    return THEMES[kidTheme] || THEMES.nebula;
-  }, [kidTheme]);
+    return THEMES[themeMode] || THEMES.blue;
+  }, [themeMode]);
 
-  const cycleTheme = () => {
-    const next = kidTheme === "nebula" ? "supernova" : "nebula";
-    setKidTheme(next);
+  const toggleTheme = () => {
+    const next = themeMode === "blue" ? "sunset" : "blue";
+    setThemeMode(next);
     try {
       localStorage.setItem("homebeamTheme", next);
     } catch {}
-    showToast(`${next === "nebula" ? "Nebula" : "SuperNova"} mode ✨`);
+    showToast(`Theme: ${next === "blue" ? "Blue" : "Sunset"} ✨`);
   };
 
-  // --- Logger ---
   const log = (msg) => {
     const timestamp = new Date().toLocaleTimeString();
-    const logMsg = `[${timestamp}] ${msg}`;
-    console.log(logMsg);
-    setLogs((prev) => [logMsg, ...prev].slice(0, 50));
+    const line = `[${timestamp}] ${msg}`;
+    console.log(line);
+    if (showDebug) setLogs((prev) => [line, ...prev].slice(0, 50));
   };
 
-  // --- Toast helper ---
   const showToast = (msg) => {
     setToast(msg);
     window.clearTimeout(showToast._t);
@@ -123,13 +120,13 @@ export default function App() {
     }
   };
 
-  // Invite link for laptops (prefill join)
+  // Invite link
   const inviteLink = useMemo(() => {
     if (!roomId) return "";
     return `${window.location.origin}/?join=${roomId}`;
   }, [roomId]);
 
-  // If opened via invite link, prefill join code
+  // Prefill join code from invite link
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -137,16 +134,18 @@ export default function App() {
       if (code && /^\d{4}$/.test(code)) {
         setJoinCode(code);
         showToast(`Invite detected — code ${code} ready ✅`);
+        // optional: clean URL so it doesn't keep prefilling
+        window.history.replaceState({}, document.title, window.location.pathname);
       }
     } catch {}
   }, []);
 
-  // Auto-focus join input on landing page
+  // focus join input on landing page
   useEffect(() => {
     if (mode === "home" && joinInputRef.current) joinInputRef.current.focus();
   }, [mode]);
 
-  // Keep local video attached when layout changes
+  // Re-attach local video when layout changes
   useEffect(() => {
     if (mode === "room" && localVideoRef.current && localStream.current) {
       localVideoRef.current.srcObject = localStream.current;
@@ -159,7 +158,7 @@ export default function App() {
     }
   }, [showMediaTest]);
 
-  // --- Init Socket (SAME ORIGIN) ---
+  // --- Socket ---
   useEffect(() => {
     const socketUrl = window.location.origin;
     log(`Connecting to socket: ${socketUrl}`);
@@ -171,7 +170,7 @@ export default function App() {
     socketRef.current.on("connect", () => {
       log("Socket Connected!");
       setError("");
-      showToast("Connected to HomeBeam ⚡");
+      showToast("Connected ⚡");
     });
 
     socketRef.current.on("connect_error", (err) => {
@@ -189,7 +188,6 @@ export default function App() {
           roomId: activeRoomIdRef.current,
           signalData: { type: "offer", sdp: offer.sdp }
         });
-        log("Offer sent.");
       } catch (err) {
         log(`Offer Error: ${err.message}`);
       }
@@ -216,7 +214,6 @@ export default function App() {
             roomId: activeRoomIdRef.current,
             signalData: { type: "answer", sdp: answer.sdp }
           });
-          log("Answer sent.");
         } else if (data.type === "answer") {
           await peerConnection.current.setRemoteDescription(
             new RTCSessionDescription({ type: "answer", sdp: data.sdp })
@@ -226,8 +223,6 @@ export default function App() {
             const candidate = candidateQueue.current.shift();
             await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
           }
-
-          log("Remote desc set (answer).");
         } else if (data.candidate) {
           if (peerConnection.current.remoteDescription) {
             await peerConnection.current.addIceCandidate(new RTCIceCandidate(data.candidate));
@@ -241,11 +236,13 @@ export default function App() {
     });
 
     return () => {
-      if (socketRef.current) socketRef.current.disconnect();
+      try {
+        socketRef.current?.disconnect();
+      } catch {}
     };
   }, []);
 
-  // --- WebRTC Setup ---
+  // --- WebRTC ---
   const setupPeerConnection = async (currentRoomId) => {
     log(`Initializing WebRTC for Room: ${currentRoomId}`);
     peerConnection.current = new RTCPeerConnection(rtcConfig);
@@ -264,7 +261,6 @@ export default function App() {
     peerConnection.current.onconnectionstatechange = () => {
       const state = peerConnection.current.connectionState;
       log(`WebRTC State: ${state}`);
-
       if (state === "connected") {
         setConnectionStatus("connected");
         showToast("Call connected 🎉");
@@ -314,7 +310,6 @@ export default function App() {
     }
   };
 
-  // --- Actions ---
   const startSession = async () => {
     const success = await openUserMedia();
     if (!success) return;
@@ -371,7 +366,6 @@ export default function App() {
     setShowMediaTest(false);
   };
 
-  // --- Media Toggles ---
   const toggleMic = () => {
     if (!localStream.current) return;
     const track = localStream.current.getAudioTracks()[0];
@@ -394,9 +388,7 @@ export default function App() {
     if (isScreenSharing) {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       const track = stream.getVideoTracks()[0];
-      const sender = peerConnection.current
-        .getSenders()
-        .find((s) => s.track && s.track.kind === "video");
+      const sender = peerConnection.current.getSenders().find((s) => s.track && s.track.kind === "video");
       if (sender) sender.replaceTrack(track);
       localVideoRef.current.srcObject = stream;
       localStream.current = stream;
@@ -406,16 +398,15 @@ export default function App() {
       try {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const track = stream.getVideoTracks()[0];
-        const sender = peerConnection.current
-          .getSenders()
-          .find((s) => s.track && s.track.kind === "video");
+        const sender = peerConnection.current.getSenders().find((s) => s.track && s.track.kind === "video");
         if (sender) sender.replaceTrack(track);
         localVideoRef.current.srcObject = stream;
+
         track.onended = () => {
-          // If the user stops sharing from browser UI, revert
           setIsScreenSharing(false);
           showToast("Screen share stopped");
         };
+
         setIsScreenSharing(true);
         showToast("Sharing screen 🖥️");
       } catch {
@@ -426,14 +417,13 @@ export default function App() {
 
   const leaveRoom = () => window.location.reload();
 
-  // --- Render ---
   return (
     <div className="w-full min-h-screen bg-slate-950 text-white font-sans relative overflow-hidden flex flex-col">
       {/* Background */}
       <div className="fixed inset-0 w-full h-full pointer-events-none z-0">
         <img
           src="/background.jpg"
-          alt="Ironman Background"
+          alt="Background"
           className="w-full h-full object-cover"
           style={{ animation: "breathing 10s ease-in-out infinite" }}
         />
@@ -454,15 +444,13 @@ export default function App() {
 
       {/* Navbar */}
       <nav className="w-full p-4 border-b border-slate-800/50 bg-slate-900/50 flex justify-between items-center sticky top-0 z-50 backdrop-blur-md">
-        <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
-          LAN Only
-        </span>
+        <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">LAN Only</span>
 
         <div className="flex gap-3 items-center">
           <button
-            onClick={cycleTheme}
+            onClick={toggleTheme}
             className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${theme.accentBorder} ${theme.accentBg} ${theme.accentText} hover:opacity-90`}
-            title="Switch kid theme (Nebula / SuperNova)"
+            title="Switch theme"
           >
             {theme.name}
           </button>
@@ -486,11 +474,7 @@ export default function App() {
                 : "bg-slate-800 border-slate-700 text-slate-400"
             }`}
           >
-            <div
-              className={`w-2 h-2 rounded-full ${
-                connectionStatus === "connected" ? "bg-emerald-400 animate-pulse" : "bg-slate-500"
-              }`}
-            />
+            <div className={`w-2 h-2 rounded-full ${connectionStatus === "connected" ? "bg-emerald-400 animate-pulse" : "bg-slate-500"}`} />
             {error ? "Error" : connectionStatus === "connected" ? "Connected" : "Ready"}
           </div>
         </div>
@@ -503,7 +487,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Debugger */}
+      {/* Debug panel */}
       {showDebug && (
         <div className="fixed bottom-0 left-0 w-full h-48 bg-black/90 text-green-400 font-mono text-xs p-4 overflow-y-auto z-[100] border-t border-slate-700">
           <div className="flex justify-between items-center mb-2 border-b border-slate-800 pb-1">
@@ -543,22 +527,11 @@ export default function App() {
                 <Camera className="w-6 h-6 text-indigo-400" /> Test Mic & Camera
               </h3>
               <div className="aspect-video bg-black rounded-xl overflow-hidden border border-slate-800 relative mb-4">
-                <video
-                  ref={testVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover -scale-x-100"
-                />
-                <div className="absolute bottom-4 left-4 bg-black/60 px-3 py-1 rounded text-xs text-white">
-                  Local Preview
-                </div>
+                <video ref={testVideoRef} autoPlay playsInline muted className="w-full h-full object-cover -scale-x-100" />
+                <div className="absolute bottom-4 left-4 bg-black/60 px-3 py-1 rounded text-xs text-white">Local Preview</div>
               </div>
               <div className="flex justify-end">
-                <button
-                  onClick={closeTestMedia}
-                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors"
-                >
+                <button onClick={closeTestMedia} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors">
                   Looks Good
                 </button>
               </div>
@@ -566,17 +539,22 @@ export default function App() {
           </div>
         )}
 
+        {/* HOME */}
         {mode === "home" && (
-          <div className="w-full max-w-6xl grid md:grid-cols-2 gap-12 items-center">
-            {/* Hero Text */}
-            <div className="flex flex-col space-y-8 text-center md:text-left pt-8 md:pt-0">
+          <div className="w-full max-w-6xl grid md:grid-cols-2 gap-16 md:gap-20 items-start">
+            {/* Hero Text (fix: min-w-0 and title clamp prevents overlap into card column) */}
+            <div className="min-w-0 flex flex-col space-y-8 text-center md:text-left pt-8 md:pt-0">
               <h1
-                className="text-6xl md:text-8xl lg:text-9xl font-black tracking-tighter leading-tight text-white py-2 mb-6"
-                style={{ animation: "glow 3s infinite alternate" }}
+                className="font-black tracking-tighter leading-[0.88] text-white break-words"
+                style={{
+                  animation: "glow 3s infinite alternate",
+                  fontSize: "clamp(3.25rem, 6.5vw, 6.8rem)" // ✅ stops overflow into the card column
+                }}
               >
                 HomeBeam
               </h1>
-              <p className="mt-2 text-lg italic text-gray-400">I Love You 3000</p>
+
+              <p className="text-lg italic text-gray-400">I Love You 3000</p>
 
               <div className="space-y-4">
                 <h2 className="text-3xl md:text-4xl font-bold text-slate-300">Offline. Secure. Local.</h2>
@@ -595,8 +573,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* Card */}
-            <div className="w-full md:w-[420px] bg-slate-900/70 backdrop-blur-md p-8 rounded-3xl border border-slate-700/50 space-y-8 shadow-2xl">
+            {/* Card (fix: keep it in its column) */}
+            <div className="w-full md:w-[420px] md:justify-self-end bg-slate-900/70 backdrop-blur-md p-8 rounded-3xl border border-slate-700/50 space-y-8 shadow-2xl">
               <button
                 onClick={startSession}
                 className={`w-full py-4 bg-gradient-to-r ${theme.gradient} rounded-xl font-bold flex items-center justify-center gap-3 text-white hover:scale-105 transition-transform shadow-lg`}
@@ -608,7 +586,7 @@ export default function App() {
               <div className="text-center text-sm text-slate-400 font-bold relative">
                 <span className="bg-transparent relative z-10 px-2 bg-slate-900/50 rounded">OR JOIN EXISTING</span>
                 <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-slate-700/50"></div>
+                  <div className="w-full border-t border-slate-700/50" />
                 </div>
               </div>
 
@@ -637,6 +615,7 @@ export default function App() {
           </div>
         )}
 
+        {/* ROOM */}
         {mode === "room" && (
           <div className="w-full max-w-full h-[calc(100vh-80px)] flex flex-col gap-4 p-4">
             <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-800 shrink-0">
@@ -665,7 +644,7 @@ export default function App() {
                 </button>
 
                 {connectionStatus !== "connected" && (
-                  <span className="text-xs text-slate-400 ml-1">Send to Nebula / SuperNova 👆</span>
+                  <span className="text-xs text-slate-400 ml-1">Share the code/link to join 👆</span>
                 )}
               </div>
 
@@ -687,13 +666,11 @@ export default function App() {
               </div>
             </div>
 
-            {/* VIDEO LAYOUT */}
             <div
               className={`flex-1 relative w-full h-full overflow-hidden rounded-2xl bg-black border border-slate-800 ${
                 isRemoteScreenSharing ? "" : "grid md:grid-cols-2 gap-4"
               }`}
             >
-              {/* REMOTE */}
               <div
                 className={`relative bg-slate-900 overflow-hidden group shadow-2xl backdrop-blur-sm transition-all duration-500 ${
                   isRemoteScreenSharing ? "absolute inset-0 w-full h-full z-0" : "w-full h-full rounded-xl border border-slate-800"
@@ -710,9 +687,9 @@ export default function App() {
                       </div>
                     </div>
                     <div className="text-center space-y-2">
-                      <p className="text-lg font-medium text-white">Waiting for the other hero...</p>
+                      <p className="text-lg font-medium text-white">Waiting for the other device...</p>
                       <p className="text-sm text-slate-500">
-                        Share code <span className="font-mono text-indigo-400 font-bold">{roomId}</span> or send the invite link.
+                        Share code <span className="font-mono text-indigo-400 font-bold">{roomId}</span> or the invite link.
                       </p>
                     </div>
                   </div>
@@ -724,7 +701,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* LOCAL */}
               <div
                 className={`relative bg-slate-900 overflow-hidden group shadow-2xl backdrop-blur-sm transition-all duration-500 ${
                   isRemoteScreenSharing
@@ -732,13 +708,7 @@ export default function App() {
                     : "w-full h-full rounded-xl border border-slate-800"
                 }`}
               >
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className={`w-full h-full object-cover ${isScreenSharing ? "" : "-scale-x-100"}`}
-                />
+                <video ref={localVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${isScreenSharing ? "" : "-scale-x-100"}`} />
 
                 <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-indigo-500" />
@@ -746,15 +716,15 @@ export default function App() {
                 </div>
 
                 <div
-                  className={`absolute inset-0 bg-black/40 flex items-center justify-center gap-4 transition-opacity duration-300 backdrop-blur-[2px]
-                  ${isRemoteScreenSharing ? "opacity-0 hover:opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+                  className={`absolute inset-0 bg-black/40 flex items-center justify-center gap-4 transition-opacity duration-300 backdrop-blur-[2px] ${
+                    isRemoteScreenSharing ? "opacity-0 hover:opacity-100" : "opacity-0 group-hover:opacity-100"
+                  }`}
                 >
                   <button
                     onClick={toggleMic}
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isMuted ? "bg-red-500 text-white" : "bg-white text-slate-900"
                     }`}
-                    title={isMuted ? "Unmute" : "Mute"}
                   >
                     {isMuted ? <MicOff className="w-5 h-5 md:w-6 md:h-6" /> : <Mic className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
@@ -764,7 +734,6 @@ export default function App() {
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isVideoOff ? "bg-red-500 text-white" : "bg-white text-slate-900"
                     }`}
-                    title={isVideoOff ? "Camera on" : "Camera off"}
                   >
                     {isVideoOff ? <VideoOff className="w-5 h-5 md:w-6 md:h-6" /> : <Video className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
@@ -774,7 +743,6 @@ export default function App() {
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isScreenSharing ? "bg-indigo-500 text-white" : "bg-white text-slate-900"
                     }`}
-                    title={isScreenSharing ? "Stop sharing" : "Share screen"}
                   >
                     {isScreenSharing ? <Layout className="w-5 h-5 md:w-6 md:h-6" /> : <Monitor className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
