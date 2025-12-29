@@ -110,10 +110,10 @@ app.get("/admin/stats.json", (req, res) => {
 const distDir = path.join(__dirname, "dist");
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
-  app.get("*", (req, res) => {
-    // for SPA routing
-    res.sendFile(path.join(distDir, "index.html"));
-  });
+
+    app.get(/.*/, (req, res) => {
+      res.sendFile(path.join(distDir, "index.html"));
+    });
 } else {
   // Helpful message if someone runs server without building
   app.get("/", (req, res) => {
