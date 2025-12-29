@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import {
   Monitor,
@@ -34,6 +34,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [showMediaTest, setShowMediaTest] = useState(false);
 
+  // Phase D: Toasts
+  const [toast, setToast] = useState("");
+
   // LOGGING STATE
   const [logs, setLogs] = useState([]);
   const [showDebug, setShowDebug] = useState(false);
@@ -48,12 +51,37 @@ export default function App() {
   const candidateQueue = useRef([]);
   const activeRoomIdRef = useRef("");
 
+  const joinInputRef = useRef(null);
+
   // --- Custom Logger Function ---
   const log = (msg, type = "info") => {
     const timestamp = new Date().toLocaleTimeString();
     const logMsg = `[${timestamp}] ${msg}`;
     console.log(logMsg);
     setLogs((prev) => [logMsg, ...prev].slice(0, 50));
+  };
+
+  // --- Toast helper ---
+  const showToast = (msg) => {
+    setToast(msg);
+    window.clearTimeout(showToast._t);
+    showToast._t = window.setTimeout(() => setToast(""), 2500);
+  };
+
+  const copyRoomCode = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      showToast("Room code copied ✅");
+    } catch {
+      // Fallback for older browsers
+      const el = document.createElement("textarea");
+      el.value = roomId;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+      showToast("Room code copied ✅");
+    }
   };
 
   useEffect(() => {
@@ -69,14 +97,15 @@ export default function App() {
     }
   }, [showMediaTest]);
 
+  useEffect(() => {
+    if (mode === "home" && joinInputRef.current) {
+      joinInputRef.current.focus();
+    }
+  }, [mode]);
+
   // --- Init Socket (SAME ORIGIN) ---
   useEffect(() => {
-    // IMPORTANT:
-    // - In production, page loads from https://<pi-ip>:3000 => socket connects to the same.
-    // - In dev, page loads from https://<pi-ip>:5173 => socket connects to the same (if your dev server proxies io).
-    // If you run a separate backend in dev, we can add a DEV override later.
     const socketUrl = window.location.origin;
-
     log(`Connecting to socket: ${socketUrl}`);
 
     socketRef.current = io(socketUrl, {
@@ -86,11 +115,11 @@ export default function App() {
     socketRef.current.on("connect", () => {
       log("Socket Connected!", "success");
       setError("");
+      showToast("Connected to HomeBeam ⚡");
     });
 
     socketRef.current.on("connect_error", (err) => {
       log(`Socket Error: ${err.message}`, "error");
-      // Tell user to trust the cert on the same origin they're using
       setError(`Connection Failed. Trust the cert at ${window.location.origin}`);
     });
 
@@ -101,7 +130,7 @@ export default function App() {
         await peerConnection.current.setLocalDescription(offer);
         socketRef.current.emit("signal", {
           roomId: activeRoomIdRef.current,
-          signalData: { type: "offer", sdp: offer.sdp } // Explicit SDP
+          signalData: { type: "offer", sdp: offer.sdp }
         });
         log(`Offer sent to room: ${activeRoomIdRef.current}`);
       } catch (err) {
@@ -133,7 +162,7 @@ export default function App() {
 
           socketRef.current.emit("signal", {
             roomId: activeRoomIdRef.current,
-            signalData: { type: answer.type, sdp: answer.sdp } // Explicit SDP
+            signalData: { type: answer.type, sdp: answer.sdp }
           });
           log("Answer sent.");
         } else if (data.type === "answer") {
@@ -187,8 +216,14 @@ export default function App() {
     peerConnection.current.onconnectionstatechange = () => {
       const state = peerConnection.current.connectionState;
       log(`WebRTC State: ${state}`);
-      if (state === "connected") setConnectionStatus("connected");
-      if (state === "disconnected") setConnectionStatus("disconnected");
+
+      if (state === "connected") {
+        setConnectionStatus("connected");
+        showToast("Call connected 🎉");
+      }
+      if (state === "disconnected" || state === "failed") {
+        setConnectionStatus("disconnected");
+      }
     };
 
     peerConnection.current.onicecandidate = (event) => {
@@ -248,6 +283,7 @@ export default function App() {
       log(`Room ${newRoomId} Created!`);
       setMode("room");
       setConnectionStatus("waiting");
+      showToast("Session ready ✅ Share the code!");
     });
     socketRef.current.once("error", (msg) => {
       log(`Create Error: ${msg}`, "error");
@@ -271,6 +307,7 @@ export default function App() {
       log("Joined Room Successfully!");
       setMode("room");
       setConnectionStatus("connecting");
+      showToast("Joining… ⚡");
     });
     socketRef.current.once("error", (msg) => {
       log(`Join Error: ${msg}`, "error");
@@ -297,6 +334,7 @@ export default function App() {
       const track = localStream.current.getAudioTracks()[0];
       track.enabled = !track.enabled;
       setIsMuted(!track.enabled);
+      showToast(track.enabled ? "Mic on 🎤" : "Mic muted 🔇");
     }
   };
 
@@ -305,6 +343,7 @@ export default function App() {
       const track = localStream.current.getVideoTracks()[0];
       track.enabled = !track.enabled;
       setIsVideoOff(!track.enabled);
+      showToast(track.enabled ? "Camera on 📷" : "Camera off 🚫");
     }
   };
 
@@ -317,6 +356,7 @@ export default function App() {
       localVideoRef.current.srcObject = stream;
       localStream.current = stream;
       setIsScreenSharing(false);
+      showToast("Back to camera 📷");
     } else {
       try {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
@@ -328,8 +368,10 @@ export default function App() {
           if (isScreenSharing) toggleScreenShare();
         };
         setIsScreenSharing(true);
+        showToast("Sharing screen 🖥️");
       } catch (err) {
         console.error(err);
+        showToast("Screen share cancelled");
       }
     }
   };
@@ -395,6 +437,13 @@ export default function App() {
           </div>
         </div>
       </nav>
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[200] px-4 py-2 rounded-full border border-white/10 bg-black/70 backdrop-blur text-white text-sm shadow-lg animate-in fade-in slide-in-from-top-2">
+          {toast}
+        </div>
+      )}
 
       {/* ON-SCREEN DEBUGGER */}
       {showDebug && (
@@ -507,6 +556,7 @@ export default function App() {
 
               <div className="flex gap-3">
                 <input
+                  ref={joinInputRef}
                   value={joinCode}
                   onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, ""))}
                   placeholder="0000"
@@ -521,6 +571,10 @@ export default function App() {
                   Join
                 </button>
               </div>
+
+              {joinCode.length > 0 && joinCode.length < 4 && (
+                <p className="text-xs text-slate-400 text-center">Enter 4 digits to join.</p>
+              )}
             </div>
           </div>
         )}
@@ -528,11 +582,24 @@ export default function App() {
         {mode === "room" && (
           <div className="w-full max-w-full h-[calc(100vh-80px)] flex flex-col gap-4 animate-in zoom-in-95 p-4">
             <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-800 shrink-0">
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-slate-400 text-sm uppercase tracking-wider font-semibold">Room Code</span>
                 <span className="text-3xl font-mono font-bold text-indigo-400 tracking-widest bg-slate-950 px-3 py-1 rounded-lg border border-slate-800">
                   {roomId}
                 </span>
+                <button
+                  onClick={copyRoomCode}
+                  className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm font-semibold"
+                  title="Copy room code"
+                >
+                  Copy
+                </button>
+
+                {connectionStatus !== "connected" && (
+                  <span className="text-xs text-slate-400 ml-1">
+                    Tell Nebula / SuperNova the code 👆
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-4">
                 <button
@@ -577,10 +644,13 @@ export default function App() {
                       </div>
                     </div>
                     <div className="text-center space-y-2">
-                      <p className="text-lg font-medium text-white">Waiting for connection...</p>
+                      <p className="text-lg font-medium text-white">Waiting for the other hero...</p>
                       <p className="text-sm text-slate-500">
-                        Share code{" "}
-                        <span className="font-mono text-indigo-400 font-bold">{roomId}</span> to connect
+                        Tell Nebula / SuperNova this code:{" "}
+                        <span className="font-mono text-indigo-400 font-bold">{roomId}</span>
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Tip: press <span className="font-mono text-slate-300">Copy</span> and send it on chat.
                       </p>
                     </div>
                   </div>
@@ -627,6 +697,7 @@ export default function App() {
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isMuted ? "bg-red-500 text-white" : "bg-white text-slate-900"
                     }`}
+                    title={isMuted ? "Unmute mic" : "Mute mic"}
                   >
                     {isMuted ? <MicOff className="w-5 h-5 md:w-6 md:h-6" /> : <Mic className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
@@ -635,6 +706,7 @@ export default function App() {
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isVideoOff ? "bg-red-500 text-white" : "bg-white text-slate-900"
                     }`}
+                    title={isVideoOff ? "Turn camera on" : "Turn camera off"}
                   >
                     {isVideoOff ? <VideoOff className="w-5 h-5 md:w-6 md:h-6" /> : <Video className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
@@ -643,6 +715,7 @@ export default function App() {
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isScreenSharing ? "bg-indigo-500 text-white" : "bg-white text-slate-900"
                     }`}
+                    title={isScreenSharing ? "Stop sharing" : "Share screen"}
                   >
                     {isScreenSharing ? <Layout className="w-5 h-5 md:w-6 md:h-6" /> : <Monitor className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
