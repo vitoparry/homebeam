@@ -1,0 +1,31 @@
+on PC: 
+git status
+git add .
+git commit -m "Describe what you changed"
+git push
+
+
+on Pi:
+
+cd ~/homebeam
+git pull
+npm ci
+npm run build
+sudo systemctl restart homebeam
+
+
+One last important habit (keep this forever)
+
+Whenever something breaks:
+
+Check browser console first
+
+Fix on PC
+
+git push
+
+git pull on Pi
+
+Restart
+
+That workflow will save you days over time.

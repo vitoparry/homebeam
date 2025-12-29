@@ -1,0 +1,8 @@
+
+pkill -f vite || true
+pkill -f server.js || true
+
+
+If your Pi IP changes, you can run:
+
+HOMEBEAM_IP=192.168.x.y npm run cert
