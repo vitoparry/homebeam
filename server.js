@@ -42,6 +42,7 @@ io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
   socket.on('create-room', (roomId) => {
+    console.log(`[Server] Create Room request: ${roomId} from ${socket.id}`);
     if (rooms[roomId]) {
       socket.emit('error', 'Room already exists');
       return;
@@ -49,10 +50,11 @@ io.on('connection', (socket) => {
     rooms[roomId] = { host: socket.id, guest: null };
     socket.join(roomId);
     socket.emit('room-created', roomId);
-    console.log(`Room ${roomId} created by ${socket.id}`);
+    console.log(`[Server] Room ${roomId} created. Host: ${socket.id}`);
   });
 
   socket.on('join-room', (roomId) => {
+    console.log(`[Server] Join Room request: ${roomId} from ${socket.id}`);
     const room = rooms[roomId];
     if (!room) {
       socket.emit('error', 'Room not found');
@@ -64,13 +66,24 @@ io.on('connection', (socket) => {
     }
     room.guest = socket.id;
     socket.join(roomId);
-    socket.to(room.host).emit('user-joined', socket.id);
+    
+    // Explicitly emit to Host ID instead of broadcast to room, to be safer
+    io.to(room.host).emit('user-joined', socket.id); 
     socket.emit('room-joined', roomId);
-    console.log(`User ${socket.id} joined room ${roomId}`);
+    console.log(`[Server] User ${socket.id} joined room ${roomId}`);
   });
 
   socket.on('signal', (data) => {
     const { roomId, signalData } = data;
+    console.log(`[Server] Relay Signal (${signalData.type || 'candidate'}) from ${socket.id} to room ${roomId}`);
+    
+    // Safety check: ensure roomId exists
+    if (!roomId) { 
+        console.error("[Server] Missing roomId in signal");
+        return; 
+    }
+
+    // Broadcast to others in the room
     socket.to(roomId).emit('signal', signalData);
   });
 

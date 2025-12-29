@@ -12,7 +12,9 @@ import {
   WifiOff,
   X,
   Camera,
-  Terminal
+  Terminal,
+  Minimize2,
+  Maximize2
 } from 'lucide-react';
 
 // --- Configuration ---
@@ -25,6 +27,7 @@ export default function App() {
   const [roomId, setRoomId] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isRemoteScreenSharing, setIsRemoteScreenSharing] = useState(false); // Track if remote is sharing/maximized
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
@@ -58,7 +61,7 @@ export default function App() {
       log("Re-attaching local stream to video element");
       localVideoRef.current.srcObject = localStream.current;
     }
-  }, [mode]);
+  }, [mode, isRemoteScreenSharing]); // Re-attach when layout changes
 
   useEffect(() => {
     if (showMediaTest && testVideoRef.current && localStream.current) {
@@ -96,8 +99,7 @@ export default function App() {
         await peerConnection.current.setLocalDescription(offer);
         socketRef.current.emit('signal', {
           roomId: activeRoomIdRef.current, 
-          // Explicitly structure the SDP object
-          signalData: { type: offer.type, sdp: offer.sdp }
+          signalData: { type: 'offer', sdp: offer.sdp } // Explicit SDP
         });
         log(`Offer sent to room: ${activeRoomIdRef.current}`);
       } catch (err) {
@@ -113,13 +115,11 @@ export default function App() {
 
       try {
         if (data.type === 'offer') {
-          // Construct the session description carefully
           const sessionDesc = new RTCSessionDescription({ type: data.type, sdp: data.sdp });
           await peerConnection.current.setRemoteDescription(sessionDesc);
           
           log("Remote Desc Set (Offer). Creating Answer...");
           
-          // Process queued candidates
           while (candidateQueue.current.length > 0) {
             const candidate = candidateQueue.current.shift();
             log("Processing queued candidate...");
@@ -131,8 +131,7 @@ export default function App() {
           
           socketRef.current.emit('signal', {
             roomId: activeRoomIdRef.current, 
-            // Explicitly structure the SDP object
-            signalData: { type: answer.type, sdp: answer.sdp }
+            signalData: { type: answer.type, sdp: answer.sdp } // Explicit SDP
           });
           log("Answer sent.");
 
@@ -141,7 +140,6 @@ export default function App() {
           await peerConnection.current.setRemoteDescription(sessionDesc);
           log("Remote Desc Set (Answer).");
           
-          // Process queued candidates
           while (candidateQueue.current.length > 0) {
             const candidate = candidateQueue.current.shift();
             log("Processing queued candidate...");
@@ -159,7 +157,6 @@ export default function App() {
         }
       } catch (err) {
         log(`Signal Error: ${err.message}`, 'error');
-        console.error(err);
       }
     });
 
@@ -198,7 +195,7 @@ export default function App() {
       if (event.candidate) {
         socketRef.current.emit('signal', {
           roomId: activeRoomIdRef.current, 
-          signalData: { candidate: event.candidate.toJSON() } // Serialize candidate
+          signalData: { candidate: event.candidate.toJSON() } 
         });
       }
     };
@@ -447,8 +444,7 @@ export default function App() {
         )}
 
         {mode === 'home' && (
-          <div className="w-full max-w-6xl flex flex-col md:flex-row gap-16 md:gap-20 items-center justify-center">
-
+          <div className="w-full max-w-6xl grid md:grid-cols-2 gap-12 items-center animate-in fade-in slide-in-from-bottom-8 duration-700">
             {/* Hero Text */}
             <div className="flex flex-col space-y-8 text-center md:text-left pt-8 md:pt-0">
               <h1 className="text-6xl md:text-8xl lg:text-9xl font-black tracking-tighter leading-tight text-white py-2 mb-6" style={{ animation: 'glow 3s infinite alternate' }}>
@@ -511,56 +507,44 @@ export default function App() {
         )}
 
         {mode === 'room' && (
-          <div className="w-full max-w-[1400px] h-[calc(100vh-120px)] flex flex-col gap-6 animate-in zoom-in-95">
-            <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-800">
+          <div className="w-full max-w-full h-[calc(100vh-80px)] flex flex-col gap-4 animate-in zoom-in-95 p-4">
+            <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-800 shrink-0">
               <div className="flex items-center gap-4">
                 <span className="text-slate-400 text-sm uppercase tracking-wider font-semibold">Room Code</span>
                 <span className="text-3xl font-mono font-bold text-indigo-400 tracking-widest bg-slate-950 px-3 py-1 rounded-lg border border-slate-800">{roomId}</span>
               </div>
-              <button onClick={leaveRoom} className="px-4 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors font-medium border border-red-500/10">
-                Disconnect
-              </button>
+              <div className="flex items-center gap-4">
+                <button 
+                  onClick={() => setIsRemoteScreenSharing(!isRemoteScreenSharing)} 
+                  className="hidden md:flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 font-medium transition-colors border border-slate-700"
+                >
+                  {isRemoteScreenSharing ? <Minimize2 className="w-4 h-4"/> : <Maximize2 className="w-4 h-4"/>}
+                  {isRemoteScreenSharing ? "Reset View" : "Focus Remote Screen"}
+                </button>
+                <button onClick={leaveRoom} className="px-4 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors font-medium border border-red-500/10">
+                  Disconnect
+                </button>
+              </div>
             </div>
 
-            <div className="flex-1 grid md:grid-cols-2 gap-6 min-h-0">
-              {/* Local Video */}
-              <div className="relative bg-slate-900/90 rounded-2xl overflow-hidden border border-slate-800 group shadow-2xl backdrop-blur-sm">
-                <video 
-                  ref={localVideoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted 
-                  className={`w-full h-full object-cover transition-transform duration-300 ${isScreenSharing ? '' : '-scale-x-100'}`} 
-                />
-                <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
-                  You {isScreenSharing ? '(Screen)' : '(Camera)'}
-                </div>
+            {/* VIDEO LAYOUT MANAGER */}
+            <div className={`flex-1 relative w-full h-full overflow-hidden rounded-2xl bg-black border border-slate-800 ${isRemoteScreenSharing ? '' : 'grid md:grid-cols-2 gap-4'}`}>
+              
+              {/* REMOTE VIDEO (Main Content if Sharing) */}
+              <div className={`relative bg-slate-900 overflow-hidden group shadow-2xl backdrop-blur-sm transition-all duration-500 
+                ${isRemoteScreenSharing 
+                  ? 'absolute inset-0 w-full h-full z-0' 
+                  : 'w-full h-full rounded-xl border border-slate-800'
+                }`}
+              >
+                <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain" />
                 
-                {/* Controls */}
-                <div className="absolute inset-0 bg-black/40 flex items-center justify-center gap-6 opacity-0 group-hover:opacity-100 transition-all duration-300 backdrop-blur-[2px]">
-                  <button onClick={toggleMic} className={`p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isMuted ? 'bg-red-500 text-white' : 'bg-white text-slate-900'}`}>
-                    {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-                  </button>
-                  <button onClick={toggleCamera} className={`p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isVideoOff ? 'bg-red-500 text-white' : 'bg-white text-slate-900'}`}>
-                    {isVideoOff ? <VideoOff className="w-6 h-6" /> : <Video className="w-6 h-6" />}
-                  </button>
-                  <button onClick={toggleScreenShare} className={`p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isScreenSharing ? 'bg-indigo-500 text-white' : 'bg-white text-slate-900'}`}>
-                    {isScreenSharing ? <Layout className="w-6 h-6" /> : <Monitor className="w-6 h-6" />}
-                  </button>
-                </div>
-              </div>
-
-              {/* Remote Video */}
-              <div className="relative bg-slate-900/90 rounded-2xl overflow-hidden border border-slate-800 flex items-center justify-center shadow-2xl backdrop-blur-sm">
-                <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
-                {connectionStatus !== 'connected' && (
+                {/* Overlay Waiting State */}
+                {connectionStatus !== 'connected' && !isRemoteScreenSharing && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-6 bg-slate-900/95 z-10 backdrop-blur-sm">
                     <div className="relative">
                       <div className="w-20 h-20 rounded-full border-4 border-slate-800 border-t-indigo-500 animate-spin" />
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <Wifi className="w-8 h-8 text-indigo-500/50" />
-                      </div>
+                      <div className="absolute inset-0 flex items-center justify-center"><Wifi className="w-8 h-8 text-indigo-500/50" /></div>
                     </div>
                     <div className="text-center space-y-2">
                       <p className="text-lg font-medium text-white">Waiting for connection...</p>
@@ -568,11 +552,48 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2">
+                
+                <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2 z-20">
                    <div className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-emerald-500' : 'bg-amber-500'}`}></div>
                    Remote
                 </div>
               </div>
+
+              {/* LOCAL VIDEO (PiP if Remote Sharing) */}
+              <div className={`relative bg-slate-900 overflow-hidden group shadow-2xl backdrop-blur-sm transition-all duration-500
+                ${isRemoteScreenSharing 
+                  ? 'absolute bottom-6 right-6 w-48 h-36 md:w-64 md:h-48 rounded-xl border-2 border-slate-700 z-50 shadow-2xl' 
+                  : 'w-full h-full rounded-xl border border-slate-800'
+                }`}
+              >
+                <video 
+                  ref={localVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className={`w-full h-full object-cover ${isScreenSharing ? '' : '-scale-x-100'}`} 
+                />
+                <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+                  You {isScreenSharing ? '(Screen)' : '(Camera)'}
+                </div>
+                
+                {/* Controls (Only visible on hover if not PiP, or always if main) */}
+                <div className={`absolute inset-0 bg-black/40 flex items-center justify-center gap-4 transition-opacity duration-300 backdrop-blur-[2px]
+                  ${isRemoteScreenSharing ? 'opacity-0 hover:opacity-100' : 'opacity-0 group-hover:opacity-100'}
+                `}>
+                  <button onClick={toggleMic} className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isMuted ? 'bg-red-500 text-white' : 'bg-white text-slate-900'}`}>
+                    {isMuted ? <MicOff className="w-5 h-5 md:w-6 md:h-6" /> : <Mic className="w-5 h-5 md:w-6 md:h-6" />}
+                  </button>
+                  <button onClick={toggleCamera} className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isVideoOff ? 'bg-red-500 text-white' : 'bg-white text-slate-900'}`}>
+                    {isVideoOff ? <VideoOff className="w-5 h-5 md:w-6 md:h-6" /> : <Video className="w-5 h-5 md:w-6 md:h-6" />}
+                  </button>
+                  <button onClick={toggleScreenShare} className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${isScreenSharing ? 'bg-indigo-500 text-white' : 'bg-white text-slate-900'}`}>
+                    {isScreenSharing ? <Layout className="w-5 h-5 md:w-6 md:h-6" /> : <Monitor className="w-5 h-5 md:w-6 md:h-6" />}
+                  </button>
+                </div>
+              </div>
+
             </div>
           </div>
         )}
