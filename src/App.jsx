@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import {
   Monitor,
@@ -14,7 +14,8 @@ import {
   Camera,
   Terminal,
   Minimize2,
-  Maximize2
+  Maximize2,
+  Link2
 } from "lucide-react";
 
 // --- Configuration ---
@@ -27,19 +28,28 @@ export default function App() {
   const [roomId, setRoomId] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [isRemoteScreenSharing, setIsRemoteScreenSharing] = useState(false); // Track if remote is sharing/maximized
+  const [isRemoteScreenSharing, setIsRemoteScreenSharing] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState("disconnected");
   const [error, setError] = useState("");
   const [showMediaTest, setShowMediaTest] = useState(false);
 
-  // Phase D: Toasts
+  // Toasts + notices
   const [toast, setToast] = useState("");
 
-  // LOGGING STATE
+  // Debug logs
   const [logs, setLogs] = useState([]);
   const [showDebug, setShowDebug] = useState(false);
+
+  // Kid theme (Nebula / SuperNova)
+  const [kidTheme, setKidTheme] = useState(() => {
+    try {
+      return localStorage.getItem("homebeamTheme") || "nebula";
+    } catch {
+      return "nebula";
+    }
+  });
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -51,11 +61,40 @@ export default function App() {
   const candidateQueue = useRef([]);
   const activeRoomIdRef = useRef("");
 
-  // Phase D: Join input focus
   const joinInputRef = useRef(null);
 
-  // --- Custom Logger Function ---
-  const log = (msg, type = "info") => {
+  // --- Theme palette ---
+  const theme = useMemo(() => {
+    const THEMES = {
+      nebula: {
+        name: "Nebula",
+        gradient: "from-indigo-600 to-purple-600",
+        accentText: "text-indigo-300",
+        accentBorder: "border-indigo-500/30",
+        accentBg: "bg-indigo-500/10"
+      },
+      supernova: {
+        name: "SuperNova",
+        gradient: "from-amber-500 to-rose-500",
+        accentText: "text-amber-200",
+        accentBorder: "border-amber-400/30",
+        accentBg: "bg-amber-400/10"
+      }
+    };
+    return THEMES[kidTheme] || THEMES.nebula;
+  }, [kidTheme]);
+
+  const cycleTheme = () => {
+    const next = kidTheme === "nebula" ? "supernova" : "nebula";
+    setKidTheme(next);
+    try {
+      localStorage.setItem("homebeamTheme", next);
+    } catch {}
+    showToast(`${next === "nebula" ? "Nebula" : "SuperNova"} mode ✨`);
+  };
+
+  // --- Logger ---
+  const log = (msg) => {
     const timestamp = new Date().toLocaleTimeString();
     const logMsg = `[${timestamp}] ${msg}`;
     console.log(logMsg);
@@ -69,28 +108,50 @@ export default function App() {
     showToast._t = window.setTimeout(() => setToast(""), 2500);
   };
 
-  const copyRoomCode = async () => {
+  const copyToClipboard = async (textToCopy, okMsg = "Copied ✅") => {
     try {
-      await navigator.clipboard.writeText(roomId);
-      showToast("Room code copied ✅");
+      await navigator.clipboard.writeText(textToCopy);
+      showToast(okMsg);
     } catch {
-      // Fallback for older browsers
       const el = document.createElement("textarea");
-      el.value = roomId;
+      el.value = textToCopy;
       document.body.appendChild(el);
       el.select();
       document.execCommand("copy");
       document.body.removeChild(el);
-      showToast("Room code copied ✅");
+      showToast(okMsg);
     }
   };
 
+  // Invite link for laptops (prefill join)
+  const inviteLink = useMemo(() => {
+    if (!roomId) return "";
+    return `${window.location.origin}/?join=${roomId}`;
+  }, [roomId]);
+
+  // If opened via invite link, prefill join code
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("join");
+      if (code && /^\d{4}$/.test(code)) {
+        setJoinCode(code);
+        showToast(`Invite detected — code ${code} ready ✅`);
+      }
+    } catch {}
+  }, []);
+
+  // Auto-focus join input on landing page
+  useEffect(() => {
+    if (mode === "home" && joinInputRef.current) joinInputRef.current.focus();
+  }, [mode]);
+
+  // Keep local video attached when layout changes
   useEffect(() => {
     if (mode === "room" && localVideoRef.current && localStream.current) {
-      log("Re-attaching local stream to video element");
       localVideoRef.current.srcObject = localStream.current;
     }
-  }, [mode, isRemoteScreenSharing]); // Re-attach when layout changes
+  }, [mode, isRemoteScreenSharing]);
 
   useEffect(() => {
     if (showMediaTest && testVideoRef.current && localStream.current) {
@@ -98,20 +159,9 @@ export default function App() {
     }
   }, [showMediaTest]);
 
-  // Auto-focus join input on landing page
-  useEffect(() => {
-    if (mode === "home" && joinInputRef.current) {
-      joinInputRef.current.focus();
-    }
-  }, [mode]);
-
   // --- Init Socket (SAME ORIGIN) ---
   useEffect(() => {
-    // IMPORTANT:
-    // - In production, page loads from https://<pi-ip>:3000 => socket connects to the same.
-    // - In dev, page loads from https://<pi-ip>:5173 => socket connects to the same (if your dev server proxies io).
     const socketUrl = window.location.origin;
-
     log(`Connecting to socket: ${socketUrl}`);
 
     socketRef.current = io(socketUrl, {
@@ -119,14 +169,13 @@ export default function App() {
     });
 
     socketRef.current.on("connect", () => {
-      log("Socket Connected!", "success");
+      log("Socket Connected!");
       setError("");
       showToast("Connected to HomeBeam ⚡");
     });
 
     socketRef.current.on("connect_error", (err) => {
-      log(`Socket Error: ${err.message}`, "error");
-      // Tell user to trust the cert on the same origin they're using
+      log(`Socket Error: ${err.message}`);
       setError(`Connection Failed. Trust the cert at ${window.location.origin}`);
       showToast("Connection issue — trust the cert 🔒");
     });
@@ -138,30 +187,25 @@ export default function App() {
         await peerConnection.current.setLocalDescription(offer);
         socketRef.current.emit("signal", {
           roomId: activeRoomIdRef.current,
-          signalData: { type: "offer", sdp: offer.sdp } // Explicit SDP
+          signalData: { type: "offer", sdp: offer.sdp }
         });
-        log(`Offer sent to room: ${activeRoomIdRef.current}`);
+        log("Offer sent.");
       } catch (err) {
-        log(`Offer Error: ${err.message}`, "error");
+        log(`Offer Error: ${err.message}`);
       }
     });
 
     socketRef.current.on("signal", async (data) => {
       if (!peerConnection.current) return;
 
-      const signalType = data.type || (data.candidate ? "candidate" : "unknown");
-      log(`Received Signal: ${signalType}`);
-
       try {
         if (data.type === "offer") {
-          const sessionDesc = new RTCSessionDescription({ type: data.type, sdp: data.sdp });
-          await peerConnection.current.setRemoteDescription(sessionDesc);
-
-          log("Remote Desc Set (Offer). Creating Answer...");
+          await peerConnection.current.setRemoteDescription(
+            new RTCSessionDescription({ type: "offer", sdp: data.sdp })
+          );
 
           while (candidateQueue.current.length > 0) {
             const candidate = candidateQueue.current.shift();
-            log("Processing queued candidate...");
             await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
           }
 
@@ -170,30 +214,29 @@ export default function App() {
 
           socketRef.current.emit("signal", {
             roomId: activeRoomIdRef.current,
-            signalData: { type: answer.type, sdp: answer.sdp } // Explicit SDP
+            signalData: { type: "answer", sdp: answer.sdp }
           });
           log("Answer sent.");
         } else if (data.type === "answer") {
-          const sessionDesc = new RTCSessionDescription({ type: data.type, sdp: data.sdp });
-          await peerConnection.current.setRemoteDescription(sessionDesc);
-          log("Remote Desc Set (Answer).");
+          await peerConnection.current.setRemoteDescription(
+            new RTCSessionDescription({ type: "answer", sdp: data.sdp })
+          );
 
           while (candidateQueue.current.length > 0) {
             const candidate = candidateQueue.current.shift();
-            log("Processing queued candidate...");
             await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
           }
+
+          log("Remote desc set (answer).");
         } else if (data.candidate) {
           if (peerConnection.current.remoteDescription) {
             await peerConnection.current.addIceCandidate(new RTCIceCandidate(data.candidate));
-            log("Added ICE Candidate directly.");
           } else {
             candidateQueue.current.push(data.candidate);
-            log("Queued ICE Candidate (waiting for remote desc).");
           }
         }
       } catch (err) {
-        log(`Signal Error: ${err.message}`, "error");
+        log(`Signal Error: ${err.message}`);
       }
     });
 
@@ -211,14 +254,11 @@ export default function App() {
       localStream.current.getTracks().forEach((track) => {
         peerConnection.current.addTrack(track, localStream.current);
       });
-      log(`Added ${localStream.current.getTracks().length} local tracks.`);
     }
 
     peerConnection.current.ontrack = (event) => {
-      log("Received Remote Stream Track!");
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-      }
+      log("Received remote track!");
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
     };
 
     peerConnection.current.onconnectionstatechange = () => {
@@ -229,10 +269,8 @@ export default function App() {
         setConnectionStatus("connected");
         showToast("Call connected 🎉");
       }
-      if (state === "disconnected") setConnectionStatus("disconnected");
-      if (state === "failed") {
+      if (state === "disconnected" || state === "failed") {
         setConnectionStatus("disconnected");
-        showToast("Connection failed 😕");
       }
     };
 
@@ -260,10 +298,9 @@ export default function App() {
         testVideoRef.current.srcObject = stream;
         testVideoRef.current.muted = true;
       }
-      log("Camera access granted.");
       return true;
     } catch (err) {
-      log(`Camera Fail: ${err.message}`, "error");
+      log(`Camera Fail: ${err.message}`);
       setError(`Camera Error: ${err.message}. HTTPS required.`);
       showToast("Camera permission needed 📷");
       return false;
@@ -279,7 +316,6 @@ export default function App() {
 
   // --- Actions ---
   const startSession = async () => {
-    log("Starting Session (Host)...");
     const success = await openUserMedia();
     if (!success) return;
 
@@ -291,38 +327,34 @@ export default function App() {
 
     socketRef.current.emit("create-room", newRoomId);
     socketRef.current.once("room-created", () => {
-      log(`Room ${newRoomId} Created!`);
       setMode("room");
       setConnectionStatus("waiting");
       showToast("Session ready ✅ Share the code!");
     });
     socketRef.current.once("error", (msg) => {
-      log(`Create Error: ${msg}`, "error");
       setError(msg);
       showToast("Could not create room 😕");
     });
   };
 
   const joinSession = async () => {
-    log(`Joining Session ${joinCode}...`);
-    if (!joinCode) return;
+    if (!joinCode || joinCode.length < 4) return;
 
     setRoomId(joinCode);
     activeRoomIdRef.current = joinCode;
 
     const success = await openUserMedia();
     if (!success) return;
+
     await setupPeerConnection(joinCode);
 
     socketRef.current.emit("join-room", joinCode);
     socketRef.current.once("room-joined", () => {
-      log("Joined Room Successfully!");
       setMode("room");
       setConnectionStatus("connecting");
       showToast("Joining… ⚡");
     });
     socketRef.current.once("error", (msg) => {
-      log(`Join Error: ${msg}`, "error");
       setError(msg);
       setMode("home");
       showToast("Could not join 😕");
@@ -331,10 +363,7 @@ export default function App() {
 
   const handleTestMedia = async () => {
     const success = await openUserMedia();
-    if (success) {
-      setShowMediaTest(true);
-      showToast("Media test opened ✅");
-    }
+    if (success) setShowMediaTest(true);
   };
 
   const closeTestMedia = () => {
@@ -344,29 +373,31 @@ export default function App() {
 
   // --- Media Toggles ---
   const toggleMic = () => {
-    if (localStream.current) {
-      const track = localStream.current.getAudioTracks()[0];
-      track.enabled = !track.enabled;
-      setIsMuted(!track.enabled);
-      showToast(track.enabled ? "Mic on 🎤" : "Mic muted 🔇");
-    }
+    if (!localStream.current) return;
+    const track = localStream.current.getAudioTracks()[0];
+    track.enabled = !track.enabled;
+    setIsMuted(!track.enabled);
+    showToast(track.enabled ? "Mic on 🎤" : "Mic muted 🔇");
   };
 
   const toggleCamera = () => {
-    if (localStream.current) {
-      const track = localStream.current.getVideoTracks()[0];
-      track.enabled = !track.enabled;
-      setIsVideoOff(!track.enabled);
-      showToast(track.enabled ? "Camera on 📷" : "Camera off 🚫");
-    }
+    if (!localStream.current) return;
+    const track = localStream.current.getVideoTracks()[0];
+    track.enabled = !track.enabled;
+    setIsVideoOff(!track.enabled);
+    showToast(track.enabled ? "Camera on 📷" : "Camera off 🚫");
   };
 
   const toggleScreenShare = async () => {
+    if (!peerConnection.current) return;
+
     if (isScreenSharing) {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       const track = stream.getVideoTracks()[0];
-      const sender = peerConnection.current.getSenders().find((s) => s.track && s.track.kind === "video");
-      sender.replaceTrack(track);
+      const sender = peerConnection.current
+        .getSenders()
+        .find((s) => s.track && s.track.kind === "video");
+      if (sender) sender.replaceTrack(track);
       localVideoRef.current.srcObject = stream;
       localStream.current = stream;
       setIsScreenSharing(false);
@@ -375,16 +406,19 @@ export default function App() {
       try {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const track = stream.getVideoTracks()[0];
-        const sender = peerConnection.current.getSenders().find((s) => s.track && s.track.kind === "video");
-        sender.replaceTrack(track);
+        const sender = peerConnection.current
+          .getSenders()
+          .find((s) => s.track && s.track.kind === "video");
+        if (sender) sender.replaceTrack(track);
         localVideoRef.current.srcObject = stream;
         track.onended = () => {
-          if (isScreenSharing) toggleScreenShare();
+          // If the user stops sharing from browser UI, revert
+          setIsScreenSharing(false);
+          showToast("Screen share stopped");
         };
         setIsScreenSharing(true);
         showToast("Sharing screen 🖥️");
-      } catch (err) {
-        console.error(err);
+      } catch {
         showToast("Screen share cancelled");
       }
     }
@@ -423,7 +457,16 @@ export default function App() {
         <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
           LAN Only
         </span>
-        <div className="flex gap-4">
+
+        <div className="flex gap-3 items-center">
+          <button
+            onClick={cycleTheme}
+            className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${theme.accentBorder} ${theme.accentBg} ${theme.accentText} hover:opacity-90`}
+            title="Switch kid theme (Nebula / SuperNova)"
+          >
+            {theme.name}
+          </button>
+
           <button
             onClick={() => setShowDebug(!showDebug)}
             className={`p-1.5 rounded-full transition-colors ${
@@ -433,6 +476,7 @@ export default function App() {
           >
             <Terminal className="w-4 h-4" />
           </button>
+
           <div
             className={`text-xs font-mono px-3 py-1 rounded-full border flex items-center gap-2 ${
               connectionStatus === "connected"
@@ -459,7 +503,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ON-SCREEN DEBUGGER */}
+      {/* Debugger */}
       {showDebug && (
         <div className="fixed bottom-0 left-0 w-full h-48 bg-black/90 text-green-400 font-mono text-xs p-4 overflow-y-auto z-[100] border-t border-slate-700">
           <div className="flex justify-between items-center mb-2 border-b border-slate-800 pb-1">
@@ -543,7 +587,7 @@ export default function App() {
 
                 <button
                   onClick={handleTestMedia}
-                  className="inline-flex items-center gap-2 text-indigo-400 hover:text-indigo-300 font-medium transition-colors border border-indigo-500/30 hover:border-indigo-500/60 px-4 py-2 rounded-lg bg-indigo-500/10"
+                  className={`inline-flex items-center gap-2 ${theme.accentText} hover:opacity-90 font-medium transition-colors border ${theme.accentBorder} px-4 py-2 rounded-lg ${theme.accentBg}`}
                 >
                   <Camera className="w-4 h-4" />
                   Test Mic & Camera
@@ -555,7 +599,7 @@ export default function App() {
             <div className="w-full md:w-[420px] bg-slate-900/70 backdrop-blur-md p-8 rounded-3xl border border-slate-700/50 space-y-8 shadow-2xl">
               <button
                 onClick={startSession}
-                className="w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl font-bold flex items-center justify-center gap-3 text-white hover:scale-105 transition-transform shadow-lg shadow-indigo-500/20"
+                className={`w-full py-4 bg-gradient-to-r ${theme.gradient} rounded-xl font-bold flex items-center justify-center gap-3 text-white hover:scale-105 transition-transform shadow-lg`}
               >
                 <Cast className="w-5 h-5" />
                 Start Local Session
@@ -598,20 +642,33 @@ export default function App() {
             <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-800 shrink-0">
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-slate-400 text-sm uppercase tracking-wider font-semibold">Room Code</span>
+
                 <span className="text-3xl font-mono font-bold text-indigo-400 tracking-widest bg-slate-950 px-3 py-1 rounded-lg border border-slate-800">
                   {roomId}
                 </span>
+
                 <button
-                  onClick={copyRoomCode}
+                  onClick={() => copyToClipboard(roomId, "Room code copied ✅")}
                   className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm font-semibold"
                   title="Copy room code"
                 >
-                  Copy
+                  Copy Code
                 </button>
+
+                <button
+                  onClick={() => copyToClipboard(inviteLink, "Invite link copied ✅")}
+                  className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm font-semibold inline-flex items-center gap-2"
+                  title="Copy invite link"
+                >
+                  <Link2 className="w-4 h-4" />
+                  Copy Invite Link
+                </button>
+
                 {connectionStatus !== "connected" && (
-                  <span className="text-xs text-slate-400 ml-1">Tell Nebula / SuperNova the code 👆</span>
+                  <span className="text-xs text-slate-400 ml-1">Send to Nebula / SuperNova 👆</span>
                 )}
               </div>
+
               <div className="flex items-center gap-4">
                 <button
                   onClick={() => setIsRemoteScreenSharing(!isRemoteScreenSharing)}
@@ -620,6 +677,7 @@ export default function App() {
                   {isRemoteScreenSharing ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                   {isRemoteScreenSharing ? "Reset View" : "Focus Remote Screen"}
                 </button>
+
                 <button
                   onClick={leaveRoom}
                   className="px-4 py-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors font-medium border border-red-500/10"
@@ -629,19 +687,16 @@ export default function App() {
               </div>
             </div>
 
-            {/* VIDEO LAYOUT MANAGER */}
+            {/* VIDEO LAYOUT */}
             <div
               className={`flex-1 relative w-full h-full overflow-hidden rounded-2xl bg-black border border-slate-800 ${
                 isRemoteScreenSharing ? "" : "grid md:grid-cols-2 gap-4"
               }`}
             >
-              {/* REMOTE VIDEO */}
+              {/* REMOTE */}
               <div
-                className={`relative bg-slate-900 overflow-hidden group shadow-2xl backdrop-blur-sm transition-all duration-500 
-                ${
-                  isRemoteScreenSharing
-                    ? "absolute inset-0 w-full h-full z-0"
-                    : "w-full h-full rounded-xl border border-slate-800"
+                className={`relative bg-slate-900 overflow-hidden group shadow-2xl backdrop-blur-sm transition-all duration-500 ${
+                  isRemoteScreenSharing ? "absolute inset-0 w-full h-full z-0" : "w-full h-full rounded-xl border border-slate-800"
                 }`}
               >
                 <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain" />
@@ -657,27 +712,21 @@ export default function App() {
                     <div className="text-center space-y-2">
                       <p className="text-lg font-medium text-white">Waiting for the other hero...</p>
                       <p className="text-sm text-slate-500">
-                        Tell Nebula / SuperNova this code:{" "}
-                        <span className="font-mono text-indigo-400 font-bold">{roomId}</span>
+                        Share code <span className="font-mono text-indigo-400 font-bold">{roomId}</span> or send the invite link.
                       </p>
                     </div>
                   </div>
                 )}
 
                 <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2 z-20">
-                  <div
-                    className={`w-2 h-2 rounded-full ${
-                      connectionStatus === "connected" ? "bg-emerald-500" : "bg-amber-500"
-                    }`}
-                  ></div>
+                  <div className={`w-2 h-2 rounded-full ${connectionStatus === "connected" ? "bg-emerald-500" : "bg-amber-500"}`} />
                   Remote
                 </div>
               </div>
 
-              {/* LOCAL VIDEO */}
+              {/* LOCAL */}
               <div
-                className={`relative bg-slate-900 overflow-hidden group shadow-2xl backdrop-blur-sm transition-all duration-500
-                ${
+                className={`relative bg-slate-900 overflow-hidden group shadow-2xl backdrop-blur-sm transition-all duration-500 ${
                   isRemoteScreenSharing
                     ? "absolute bottom-6 right-6 w-48 h-36 md:w-64 md:h-48 rounded-xl border-2 border-slate-700 z-50 shadow-2xl"
                     : "w-full h-full rounded-xl border border-slate-800"
@@ -690,51 +739,44 @@ export default function App() {
                   muted
                   className={`w-full h-full object-cover ${isScreenSharing ? "" : "-scale-x-100"}`}
                 />
+
                 <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-medium border border-white/10 flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+                  <div className="w-2 h-2 rounded-full bg-indigo-500" />
                   You {isScreenSharing ? "(Screen)" : "(Camera)"}
                 </div>
 
                 <div
                   className={`absolute inset-0 bg-black/40 flex items-center justify-center gap-4 transition-opacity duration-300 backdrop-blur-[2px]
-                  ${isRemoteScreenSharing ? "opacity-0 hover:opacity-100" : "opacity-0 group-hover:opacity-100"}
-                `}
+                  ${isRemoteScreenSharing ? "opacity-0 hover:opacity-100" : "opacity-0 group-hover:opacity-100"}`}
                 >
                   <button
                     onClick={toggleMic}
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isMuted ? "bg-red-500 text-white" : "bg-white text-slate-900"
                     }`}
+                    title={isMuted ? "Unmute" : "Mute"}
                   >
-                    {isMuted ? (
-                      <MicOff className="w-5 h-5 md:w-6 md:h-6" />
-                    ) : (
-                      <Mic className="w-5 h-5 md:w-6 md:h-6" />
-                    )}
+                    {isMuted ? <MicOff className="w-5 h-5 md:w-6 md:h-6" /> : <Mic className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
+
                   <button
                     onClick={toggleCamera}
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isVideoOff ? "bg-red-500 text-white" : "bg-white text-slate-900"
                     }`}
+                    title={isVideoOff ? "Camera on" : "Camera off"}
                   >
-                    {isVideoOff ? (
-                      <VideoOff className="w-5 h-5 md:w-6 md:h-6" />
-                    ) : (
-                      <Video className="w-5 h-5 md:w-6 md:h-6" />
-                    )}
+                    {isVideoOff ? <VideoOff className="w-5 h-5 md:w-6 md:h-6" /> : <Video className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
+
                   <button
                     onClick={toggleScreenShare}
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isScreenSharing ? "bg-indigo-500 text-white" : "bg-white text-slate-900"
                     }`}
+                    title={isScreenSharing ? "Stop sharing" : "Share screen"}
                   >
-                    {isScreenSharing ? (
-                      <Layout className="w-5 h-5 md:w-6 md:h-6" />
-                    ) : (
-                      <Monitor className="w-5 h-5 md:w-6 md:h-6" />
-                    )}
+                    {isScreenSharing ? <Layout className="w-5 h-5 md:w-6 md:h-6" /> : <Monitor className="w-5 h-5 md:w-6 md:h-6" />}
                   </button>
                 </div>
               </div>
