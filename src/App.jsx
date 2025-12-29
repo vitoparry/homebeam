@@ -450,6 +450,7 @@ export default function App() {
               <h1 className="text-6xl md:text-8xl lg:text-9xl font-black tracking-tighter leading-tight text-white py-2 mb-6" style={{ animation: 'glow 3s infinite alternate' }}>
                 HomeBeam
               </h1>
+                  <p className="mt-2 text-lg italic text-gray-400">I Love You 3000</p>
 
               <div className="space-y-4">
                 <h2 className="text-3xl md:text-4xl font-bold text-slate-300">
