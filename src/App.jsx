@@ -51,6 +51,7 @@ export default function App() {
   const candidateQueue = useRef([]);
   const activeRoomIdRef = useRef("");
 
+  // Phase D: Join input focus
   const joinInputRef = useRef(null);
 
   // --- Custom Logger Function ---
@@ -97,6 +98,7 @@ export default function App() {
     }
   }, [showMediaTest]);
 
+  // Auto-focus join input on landing page
   useEffect(() => {
     if (mode === "home" && joinInputRef.current) {
       joinInputRef.current.focus();
@@ -105,7 +107,11 @@ export default function App() {
 
   // --- Init Socket (SAME ORIGIN) ---
   useEffect(() => {
+    // IMPORTANT:
+    // - In production, page loads from https://<pi-ip>:3000 => socket connects to the same.
+    // - In dev, page loads from https://<pi-ip>:5173 => socket connects to the same (if your dev server proxies io).
     const socketUrl = window.location.origin;
+
     log(`Connecting to socket: ${socketUrl}`);
 
     socketRef.current = io(socketUrl, {
@@ -120,7 +126,9 @@ export default function App() {
 
     socketRef.current.on("connect_error", (err) => {
       log(`Socket Error: ${err.message}`, "error");
+      // Tell user to trust the cert on the same origin they're using
       setError(`Connection Failed. Trust the cert at ${window.location.origin}`);
+      showToast("Connection issue — trust the cert 🔒");
     });
 
     socketRef.current.on("user-joined", async () => {
@@ -130,7 +138,7 @@ export default function App() {
         await peerConnection.current.setLocalDescription(offer);
         socketRef.current.emit("signal", {
           roomId: activeRoomIdRef.current,
-          signalData: { type: "offer", sdp: offer.sdp }
+          signalData: { type: "offer", sdp: offer.sdp } // Explicit SDP
         });
         log(`Offer sent to room: ${activeRoomIdRef.current}`);
       } catch (err) {
@@ -162,7 +170,7 @@ export default function App() {
 
           socketRef.current.emit("signal", {
             roomId: activeRoomIdRef.current,
-            signalData: { type: answer.type, sdp: answer.sdp }
+            signalData: { type: answer.type, sdp: answer.sdp } // Explicit SDP
           });
           log("Answer sent.");
         } else if (data.type === "answer") {
@@ -221,8 +229,10 @@ export default function App() {
         setConnectionStatus("connected");
         showToast("Call connected 🎉");
       }
-      if (state === "disconnected" || state === "failed") {
+      if (state === "disconnected") setConnectionStatus("disconnected");
+      if (state === "failed") {
         setConnectionStatus("disconnected");
+        showToast("Connection failed 😕");
       }
     };
 
@@ -255,6 +265,7 @@ export default function App() {
     } catch (err) {
       log(`Camera Fail: ${err.message}`, "error");
       setError(`Camera Error: ${err.message}. HTTPS required.`);
+      showToast("Camera permission needed 📷");
       return false;
     }
   };
@@ -288,6 +299,7 @@ export default function App() {
     socketRef.current.once("error", (msg) => {
       log(`Create Error: ${msg}`, "error");
       setError(msg);
+      showToast("Could not create room 😕");
     });
   };
 
@@ -313,6 +325,7 @@ export default function App() {
       log(`Join Error: ${msg}`, "error");
       setError(msg);
       setMode("home");
+      showToast("Could not join 😕");
     });
   };
 
@@ -320,6 +333,7 @@ export default function App() {
     const success = await openUserMedia();
     if (success) {
       setShowMediaTest(true);
+      showToast("Media test opened ✅");
     }
   };
 
@@ -440,7 +454,7 @@ export default function App() {
 
       {/* Toast */}
       {toast && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[200] px-4 py-2 rounded-full border border-white/10 bg-black/70 backdrop-blur text-white text-sm shadow-lg animate-in fade-in slide-in-from-top-2">
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[200] px-4 py-2 rounded-full border border-white/10 bg-black/70 backdrop-blur text-white text-sm shadow-lg">
           {toast}
         </div>
       )}
@@ -465,7 +479,7 @@ export default function App() {
 
       <main className="relative z-10 flex-1 flex items-center justify-center p-6 w-full">
         {error && (
-          <div className="absolute top-4 mb-6 p-4 bg-red-900/20 border border-red-500/50 rounded-lg text-red-200 flex items-center gap-3 max-w-md w-full animate-in slide-in-from-top-4 z-50">
+          <div className="absolute top-4 mb-6 p-4 bg-red-900/20 border border-red-500/50 rounded-lg text-red-200 flex items-center gap-3 max-w-md w-full z-50">
             <WifiOff className="w-5 h-5 flex-shrink-0" />
             <p className="text-sm">{error}</p>
           </div>
@@ -473,7 +487,7 @@ export default function App() {
 
         {/* Media Test Modal */}
         {showMediaTest && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in zoom-in-95">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-2xl relative shadow-2xl">
               <button
                 onClick={closeTestMedia}
@@ -509,7 +523,7 @@ export default function App() {
         )}
 
         {mode === "home" && (
-          <div className="w-full max-w-6xl grid md:grid-cols-2 gap-12 items-center animate-in fade-in slide-in-from-bottom-8 duration-700">
+          <div className="w-full max-w-6xl grid md:grid-cols-2 gap-12 items-center">
             {/* Hero Text */}
             <div className="flex flex-col space-y-8 text-center md:text-left pt-8 md:pt-0">
               <h1
@@ -580,7 +594,7 @@ export default function App() {
         )}
 
         {mode === "room" && (
-          <div className="w-full max-w-full h-[calc(100vh-80px)] flex flex-col gap-4 animate-in zoom-in-95 p-4">
+          <div className="w-full max-w-full h-[calc(100vh-80px)] flex flex-col gap-4 p-4">
             <div className="flex justify-between items-center bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-800 shrink-0">
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-slate-400 text-sm uppercase tracking-wider font-semibold">Room Code</span>
@@ -594,11 +608,8 @@ export default function App() {
                 >
                   Copy
                 </button>
-
                 {connectionStatus !== "connected" && (
-                  <span className="text-xs text-slate-400 ml-1">
-                    Tell Nebula / SuperNova the code 👆
-                  </span>
+                  <span className="text-xs text-slate-400 ml-1">Tell Nebula / SuperNova the code 👆</span>
                 )}
               </div>
               <div className="flex items-center gap-4">
@@ -649,9 +660,6 @@ export default function App() {
                         Tell Nebula / SuperNova this code:{" "}
                         <span className="font-mono text-indigo-400 font-bold">{roomId}</span>
                       </p>
-                      <p className="text-xs text-slate-500">
-                        Tip: press <span className="font-mono text-slate-300">Copy</span> and send it on chat.
-                      </p>
                     </div>
                   </div>
                 )}
@@ -697,27 +705,36 @@ export default function App() {
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isMuted ? "bg-red-500 text-white" : "bg-white text-slate-900"
                     }`}
-                    title={isMuted ? "Unmute mic" : "Mute mic"}
                   >
-                    {isMuted ? <MicOff className="w-5 h-5 md:w-6 md:h-6" /> : <Mic className="w-5 h-5 md:w-6 md:h-6" />}
+                    {isMuted ? (
+                      <MicOff className="w-5 h-5 md:w-6 md:h-6" />
+                    ) : (
+                      <Mic className="w-5 h-5 md:w-6 md:h-6" />
+                    )}
                   </button>
                   <button
                     onClick={toggleCamera}
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isVideoOff ? "bg-red-500 text-white" : "bg-white text-slate-900"
                     }`}
-                    title={isVideoOff ? "Turn camera on" : "Turn camera off"}
                   >
-                    {isVideoOff ? <VideoOff className="w-5 h-5 md:w-6 md:h-6" /> : <Video className="w-5 h-5 md:w-6 md:h-6" />}
+                    {isVideoOff ? (
+                      <VideoOff className="w-5 h-5 md:w-6 md:h-6" />
+                    ) : (
+                      <Video className="w-5 h-5 md:w-6 md:h-6" />
+                    )}
                   </button>
                   <button
                     onClick={toggleScreenShare}
                     className={`p-3 md:p-4 rounded-full transition-transform hover:scale-110 shadow-lg ${
                       isScreenSharing ? "bg-indigo-500 text-white" : "bg-white text-slate-900"
                     }`}
-                    title={isScreenSharing ? "Stop sharing" : "Share screen"}
                   >
-                    {isScreenSharing ? <Layout className="w-5 h-5 md:w-6 md:h-6" /> : <Monitor className="w-5 h-5 md:w-6 md:h-6" />}
+                    {isScreenSharing ? (
+                      <Layout className="w-5 h-5 md:w-6 md:h-6" />
+                    ) : (
+                      <Monitor className="w-5 h-5 md:w-6 md:h-6" />
+                    )}
                   </button>
                 </div>
               </div>
