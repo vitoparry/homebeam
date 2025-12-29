@@ -20,10 +20,20 @@ app.get('/', (req, res) => {
   `);
 });
 
+import fs from 'fs';
+
+const keyPath = './certs/key.pem';
+const certPath = './certs/cert.pem';
+
+if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+  console.error('❌ Missing TLS certs in ./certs/');
+  console.error('   Run: npm run cert');
+  process.exit(1);
+}
 // Load the self-signed certificates
 const httpsOptions = {
-  key: readFileSync('./key.pem'),
-  cert: readFileSync('./cert.pem')
+  key: readFileSync(keyPath),
+  cert: readFileSync(certPath),
 };
 
 const server = createServer(httpsOptions, app);
